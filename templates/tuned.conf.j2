@@ -1,0 +1,28 @@
+#
+# tuned configuration
+#
+[main]
+summary=Optimize for PostgreSQL RDBMS
+include=throughput-performance
+
+[cpu]
+governor=performance
+energy_perf_bias=performance
+min_perf_pct=100
+
+[disk]
+readahead=>8192
+#readahead=>16384
+
+[sysctl]
+kernel.sched_min_granularity_ns = 10000000
+kernel.sched_wakeup_granularity_ns = 15000000
+vm.dirty_ratio = 2
+vm.dirty_background_ratio = 1
+vm.swappiness=0
+vm.overcommit_memory=2
+vm.nr_hugepages={{ postgresql_host_nr_hugepages }}
+
+[vm]
+transparent_hugepages=never
+

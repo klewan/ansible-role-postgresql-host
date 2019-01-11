@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+
+{% for line in item.entries|default([],true) %}
+{{ line }} 
+{% endfor %}
+

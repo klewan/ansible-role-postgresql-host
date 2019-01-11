@@ -1,0 +1,24 @@
+# .bash_profile
+
+# Get the aliases and functions
+if [ -f ~/.bashrc ]; then
+        . ~/.bashrc
+fi
+
+# User specific environment and startup programs
+
+export BASE_PATH=/usr/lib64/qt-3.3/bin:/usr/local/bin:/bin:/usr/bin:/usr/local/sbin:/usr/sbin:$PATH:$HOME/.local/bin:$HOME/bin
+
+export EDITOR=vi
+export HOST=`hostname -s`
+export USER=`id -un`
+export PATH=.:$PATH:$HOME/.local/bin:$HOME/bin
+
+export PS1='[`whoami`@`hostname` ({{ env_short_name }}) `pwd`]\$ '
+
+alias at_pg_activity='function _blah(){ pg_activity -h `hostname -s` -p $PGPORT -U $1 -d $2 ; };_blah'
+alias at_pg_top='function _blah(){ pg_top -h `hostname -s` -p $PGPORT -U $1 -W -d $2 ; };_blah'
+alias at_pgmetrics='function _blah(){ pgmetrics -h `hostname -s` -p $PGPORT -U $1 $2 ; };unset PAGER;_blah'
+alias psqls='function _blah(){ PGSERVICE=$2 psql -d postgres -U $1 ; };_blah'
+alias m='source ~/menu'
+

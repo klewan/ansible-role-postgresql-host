@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+
+{{ item.username }} ALL=(ALL) NOPASSWD: /bin/su - postgres, /bin/su -c postgres
+{{ item.username }} ALL=({{ postgresql_user }}) NOPASSWD: ALL
+{{ item.username }} ALL=(nagios) NOPASSWD: ALL
+{{ item.username }} ALL=(root) NOPASSWD: ALL
+

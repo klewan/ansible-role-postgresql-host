@@ -1,0 +1,650 @@
+---
+
+#
+# check for correct OS family & min version
+#
+
+- name: server configuration | check for correct OS family & min version
+  assert:
+    that:
+      - "ansible_os_family == '{{ postgresql_host_os_family_supported }}'"
+      - "ansible_distribution_version >= '{{ postgresql_host_os_min_supported_version }}'"
+  tags: 
+    - postgresql_host_oscheck
+
+#
+# Common Services
+#
+
+- name: services | start and enable NTP
+  systemd:
+    name: ntpd
+    state: started
+    enabled: true
+  when: postgresql_host_configure_ntp
+  tags: 
+    - postgresql_host_services
+    - postgresql_host_ntp
+
+- name: motd | add motd
+  template: src=motd.j2 dest=/etc/motd
+  when: postgresql_host_configure_motd
+  tags:
+    - postgresql_host_services
+    - postgresql_host_motd
+
+#
+# disable transparent hugepages
+#
+
+- name: disable transparent hugepages | check if Transparent Hhuge Pages are enabled
+  shell: cat /proc/meminfo | grep -i 'AnonHugePages:' | grep -v grep | awk '{print $2}'
+  register: postgresql_host_nr_transparent_hugepages
+  tags: 
+    - postgresql_host_transparent_hugepages
+
+- name: disable transparent hugepages | disable transparent hugepages (runtime)
+  shell: if test -f {{ item.path }}; then {{ item.disable }} {{ item.path }}; fi;
+  with_items:
+    - '{{ postgresql_host_transparent_hugepage_disable }}'
+  loop_control:
+    label: "[{{ item.path }}]"
+  when: postgresql_host_nr_transparent_hugepages.stdout|int > 0
+  tags: 
+    - postgresql_host_transparent_hugepages
+
+- name: disable transparent hugepages | check default-kernel with grubby
+  shell: grubby --default-kernel
+  register: postgresql_host_default_kernel
+  when: postgresql_host_nr_transparent_hugepages.stdout|int > 0 and ansible_os_family == "RedHat" and ansible_distribution_major_version|int >= 7
+  tags:
+    - postgresql_host_transparent_hugepages
+
+- name: disable transparent hugepages | update kernel with transparent_hugepage=never
+  shell: grubby --args="transparent_hugepage=never" --update-kernel {{ postgresql_host_default_kernel.stdout }}
+  when: postgresql_host_nr_transparent_hugepages.stdout|int > 0 and ansible_os_family == "RedHat" and ansible_distribution_major_version|int >= 7
+  tags: 
+    - postgresql_host_transparent_hugepages
+
+#
+# disable selinux
+#
+
+- name: disable selinux | disable selinux (permanently)
+  selinux: state=disabled
+  when: postgresql_host_disable_selinux
+  tags: 
+    - postgresql_host_selinux
+
+- name: disable selinux | disable selinux (runtime)
+  shell: setenforce 0
+  when: postgresql_host_disable_selinux
+  failed_when: false
+  tags: 
+    - postgresql_host_selinux
+
+#
+# configure firewall
+#
+
+- name: configure firewalld | start firewalld
+  service: name=firewalld state=started
+  when: not postgresql_host_disable_firewall and postgresql_host_firewall_service == 'firewalld' and postgresql_host_enable_custom_firewalld_config|bool
+  tags:
+    - postgresql_host_configure_firewalld
+    - postgresql_host_firewall
+
+- name: configure firewalld | configure
+  firewalld:
+    port: "{{ item.port }}"
+    permanent: "{{ item.permanent }}"
+    state: "{{ item.state }}"
+    immediate: "{{ item.immediate }}"
+  with_items:
+    - "{{ postgresql_host_custom_firewalld_config }}"
+  loop_control:
+    label: "[port: {{ item.port }}, state: {{ item.state }}, comment: {{ item.comment }}]"
+  when: not postgresql_host_disable_firewall and postgresql_host_firewall_service == 'firewalld' and postgresql_host_enable_custom_firewalld_config|bool
+  tags:
+    - postgresql_host_configure_firewalld
+    - postgresql_host_firewall
+
+#
+# disable firewall
+#
+
+- name: disable firewall | disable firewall
+  service: name={{ postgresql_host_firewall_service }} state=stopped enabled=no
+  when: postgresql_host_disable_firewall
+  tags: 
+    - postgresql_host_firewall
+
+- name: enable firewall | enable firewall
+  service: name={{ postgresql_host_firewall_service }} state=started enabled=yes
+  when: not postgresql_host_disable_firewall
+  tags:
+    - postgresql_host_firewall
+
+#
+# configure tuned profile
+#
+
+- name: configure tuned profile | check memory size
+  shell: cat /proc/meminfo | grep -i MemTotal | awk '{print $2}'
+  register: postgresql_host_mem_kb
+  tags: 
+    - postgresql_host_tuned
+
+- name: configure tuned profile | install tuned package
+  yum: name=tuned state=present
+  tags: 
+    - postgresql_host_tuned
+
+- name: configure tuned profile | enable and start tuned service
+  service:
+    name: tuned
+    state: started
+    enabled: yes
+  tags:
+    - postgresql_host_tuned
+
+- name: configure tuned profile | create postgresql profile directory
+  file: path={{ postgresql_host_tuned_directory }}/postgresql-profile state=directory
+  tags:
+    - postgresql_host_tuned
+
+- name: configure tuned profile | create tuned.conf file based on a template
+  template: src=tuned.conf.j2 dest={{ postgresql_host_tuned_directory }}/postgresql-profile/tuned.conf mode=0644
+  tags:
+    - postgresql_host_tuned
+
+- name: configure tuned profile | activate postgresql-profile profile
+  shell: tuned-adm profile postgresql-profile
+  tags:
+    - postgresql_host_tuned
+
+- name: configure tuned profile | check current active profile
+  shell: tuned-adm list | grep "Current active profile"
+  register: postgresql_host_current_tuned_profile
+  tags:
+    - postgresql_host_tuned
+
+- name: configure tuned profile | print the current active profile 
+  debug:
+    msg: "{{ postgresql_host_current_tuned_profile.stdout }}"
+  tags:
+    - postgresql_host_tuned
+
+#
+# add groups and users
+#
+
+- name: add groups and users | add postgres group
+  group: name={{ postgresql_group }} gid={{ postgresql_host_postgres_gid }} state=present
+  tags: 
+    - postgresql_host_postgres_group
+
+- name: add groups and users | add postgres user
+  user: 
+    name: "{{ postgresql_user }}"
+    group: "{{ postgresql_group }}"
+    groups: "{{ postgresql_group }}"
+    uid: "{{ postgresql_host_postgres_uid }}"
+    generate_ssh_key: yes 
+    append: yes 
+    state: present 
+    shell: /bin/bash
+    comment: 'PostgreSQL user'
+    home: "/home/{{ postgresql_user }}"
+  tags: 
+    - postgresql_host_postgres_user
+
+- name: add groups and users | turn off postgres user expiration and aging
+  shell: chage -I -1 -m 0 -M 99999 -E -1 {{ postgresql_user }}
+  tags:
+    - postgresql_host_postgres_user
+
+- name: add groups and users | add DBA groups
+  group: name={{ item.group }} gid={{ item.gid }} state=present
+  with_items: '{{ postgresql_host_dba_groups }}'
+  loop_control:
+    label: "[group: {{ item.group }}]"
+  tags:
+    - postgresql_host_dba_group
+
+- name: add groups and users | add DBA users
+  user: 
+    name: "{{ item.username }}"
+    group: "{{ item.primgroup }}"
+    groups: "{{ item.othergroups }}"
+    uid: "{{ item.uid }}"
+    generate_ssh_key: no
+    append: yes 
+    state: present 
+    shell: /bin/bash
+    comment: "{{ item.comment }}"
+    home: "/home/{{ item.username }}"
+  with_items: "{{ postgresql_host_dba_users }}"
+  loop_control:
+    label: "[user: {{ item.username }}]"
+  tags:
+    - postgresql_host_dba_users
+
+- name: add groups and users | add DBA users authorized keys
+  authorized_key:
+    user: "{{ item.username }}"
+    state: present
+    key: '{{ item.key }}'
+  with_items: "{{ postgresql_host_dba_users }}"
+  loop_control:
+    label: "[user: {{ item.username }}]"
+  when: item.key is defined and item.key != ""
+  tags:
+    - postgresql_host_dba_users
+    - postgresql_host_dba_users_authorized_keys
+
+- name: add groups and users | turn off DBA users expiration and aging
+  shell: chage -I -1 -m 0 -M 99999 -E -1 {{ item.username }}
+  with_items:
+    - "{{ postgresql_host_dba_users }}"
+  loop_control:
+    label: "[user: {{ item.username }}]"
+  tags: 
+    - postgresql_host_dba_users
+
+- name: add groups and users | update /etc/security/access.conf file for postgres users
+  lineinfile:
+    path: /etc/security/access.conf
+    regexp: '^.\s*:\s*{{ postgresql_user }}\s*:.*'
+    insertbefore: '^\-\s*:\s*ALL\s*:\s*ALL'
+    line: '+:{{ postgresql_user }}:ALL'
+  tags:
+    - postgresql_host_postgres_user
+    - postgresql_host_postgres_access_conf
+
+- name: add groups and users | update /etc/security/access.conf file for DBA users
+  lineinfile:
+    path: /etc/security/access.conf
+    regexp: '^.\s*:\s*{{ item.username }}\s*:.*'
+    insertbefore: '^\-\s*:\s*ALL\s*:\s*ALL'
+    line: '+:{{ item.username }}:ALL'
+  with_items:
+    - "{{ postgresql_host_dba_users }}"
+  loop_control:
+    label: "[user: {{ item.username }}]"
+  tags:
+    - postgresql_host_dba_users
+    - postgresql_host_dba_users_access_conf
+
+- name: add groups and users | create postgres user .bash_profile file
+  template: src=postgres_bash_profile_regular.j2 dest=~/.bash_profile mode=0644 backup=yes
+  become: true
+  become_user: '{{ postgresql_user }}'
+  tags:
+    - postgresql_host_postgres_user
+    - postgresql_host_postgres_userprofile
+
+- name: add groups and users | postgresql-recommended security limits
+  lineinfile:
+    path: /etc/security/limits.d/99-postgresql-limits.conf
+    create: yes
+    state: present
+    regexp: '^{{ postgresql_user }}\s+{{ item.name }}\s+.*'
+    backup: no
+    line: '{{ postgresql_user }} {{ item.name }} {{ item.value }}'
+  with_items:
+    - '{{ postgresql_host_postgres_seclimits }}'
+  loop_control:
+    label: "[{{ item.name }}: {{ item.value }}]"
+  tags:
+    - postgresql_host_postgres_user
+    - postgresql_host_seclimit
+
+- name: add groups and users | configure sudoers entries
+  template: src=sudoers_dropin_file.j2 dest=/etc/sudoers.d/{{ item.filename }} owner=root mode=0600
+  with_items:
+    - "{{ postgresql_host_sudoers_drop_in_files }}"
+  loop_control:
+    label: "[filename: {{ item.filename }}]"
+  when: postgresql_host_configure_sudoers
+  tags:
+    - postgresql_host_sudoers
+
+#- name: add groups and users | add postgres user to sudoers
+#  template: src=postgres_sudoers.j2 dest=/etc/sudoers.d/{{ postgresql_user }} owner=root mode=0600
+#  when: postgresql_host_configure_postgres_sudo
+#  tags:
+#    - postgresql_host_postgres_user
+#    - postgresql_host_postgres_sudoadd
+
+#- name: add groups and users | add DBA users to sudoers
+#  template: src=dba_sudoers.j2 dest=/etc/sudoers.d/{{ item.username }} owner=root mode=0600
+#  with_items:
+#    - "{{ postgresql_host_dba_users }}"
+#  loop_control:
+#    label: "[user: {{ item.username }}]"
+#  tags:
+#    - postgresql_host_dba_users
+#    - postgresql_host_dba_sudoadd
+
+#
+# add /etc/pgtab
+#
+
+- name: configure /etc/pgtab | create /etc/pgtab file
+  file: path=/etc/pgtab state=touch owner={{ postgresql_user }} group={{ postgresql_group }} mode=0664
+  tags:
+    - postgresql_host_etcpgtab
+
+#
+# configure filesystems
+#
+
+- name: configure filesystems | mount filesystems | set temporary variables (1)
+  set_fact:
+    f_postgresql_host_fs_layout: []
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_instances
+    - postgresql_host_filesystems_databases
+
+- name: configure filesystems | create directories
+  file: path={{ item.1.mntp }} state=directory owner={{ postgresql_user }} group={{ postgresql_group }} mode={{ item.1.mode }}
+  with_subelements:
+    - "{{ postgresql_host_fs_layout }}"
+    - filesystem
+  loop_control:
+    label: "[directory: {{ item.1.mntp }}]"
+  when: postgresql_host_configure_host_disks
+  tags: 
+    - postgresql_host_filesystems
+
+- name: configure filesystems | create vg groups
+  lvg: vg={{ item.vgname }} pvs={{ postgresql_host_fs_layout_vgdisks }} state={{ item.state }}
+  with_items: "{{ postgresql_host_fs_layout }}"
+  loop_control:
+    label: "[VG: {{ item.vgname }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+
+- name: configure filesystems | create LVs
+  lvol: vg={{ item.0.vgname }} lv={{ item.1.lvname }} size={{ item.1.lvsize }} state=present shrink=no
+  with_subelements:
+    - "{{ postgresql_host_fs_layout }}"
+    - filesystem
+  loop_control:
+    label: "[VG: {{ item.0.vgname }}, LV: {{ item.1.lvname }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+
+- name: configure filesystems | create filesystems
+  filesystem: fstype={{ item.1.fstype }} dev=/dev/{{ item.0.vgname }}/{{ item.1.lvname }}
+  with_subelements:
+    - "{{ postgresql_host_fs_layout }}"
+    - filesystem
+  loop_control:
+    label: "[filesystem: /dev/{{ item.0.vgname }}/{{ item.1.lvname }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+
+- name: configure filesystems | mount filesystems | set temporary variables (2)
+  set_fact:
+    f_postgresql_host_fs_layout: "{{ f_postgresql_host_fs_layout + [ {} | combine( { 'vgname': item.0.vgname } ) | combine( { 'mntp': item.1.mntp } ) | combine( { 'lvname': item.1.lvname } ) | combine( { 'fstype': item.1.fstype } ) | combine( { 'mntp_len': item.1.mntp|length } ) ] }}"
+  with_subelements:
+    - "{{ postgresql_host_fs_layout }}"
+    - filesystem
+  loop_control:
+    label: "[mount point: {{ item.1.mntp }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+
+#
+# configure filesystems for PostgreSQL instances
+#
+
+- name: configure filesystems | create directories (instances)
+  file: path={{ postgresql_host_datavg_mountpoint_prefix }}/{{ item.0.name }}/{{ item.1.mntp_suffix }} state=directory owner={{ postgresql_user }} group={{ postgresql_group }} mode={{ item.1.mode }}
+  with_subelements:
+    - "{{ postgresql_clusters }}"
+    - filesystem
+  loop_control:
+    label: "[directory: {{ postgresql_host_datavg_mountpoint_prefix }}/{{ item.0.name }}/{{ item.1.mntp_suffix }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_instances
+
+- name: configure filesystems | create LVs (instances)
+  lvol: vg={{ postgresql_host_datavg }} lv=lvpg{{ item.0.name }}{{ item.1.mntp_suffix }} size={{ item.1.lvsize }} state=present shrink=no
+  with_subelements:
+    - "{{ postgresql_clusters }}"
+    - filesystem
+  loop_control:
+    label: "[instance: {{ item.0.name }}, LV: lvpg{{ item.0.name }}{{ item.1.mntp_suffix }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_instances
+
+- name: configure filesystems | create filesystems (instances)
+  filesystem: fstype={{ item.1.fstype }} dev=/dev/{{ postgresql_host_datavg }}/lvpg{{ item.0.name }}{{ item.1.mntp_suffix }}
+  with_subelements:
+    - "{{ postgresql_clusters }}"
+    - filesystem
+  loop_control:
+    label: "[filesystem: /dev/{{ postgresql_host_datavg }}/lvpg{{ item.0.name }}{{ item.1.mntp_suffix }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_instances
+
+#- name: configure filesystems | mount filesystems
+#  mount: 
+#    name: "{{ postgresql_host_datavg_mountpoint_prefix }}/{{ item.0.name }}/{{ item.1.mntp_suffix }}"
+#    src: "/dev/mapper/{{ postgresql_host_datavg }}-lvpg{{ item.0.name }}{{ item.1.mntp_suffix }}"
+#    dump: 1 
+#    passno: 2 
+#    fstype: "{{ item.1.fstype }}"
+#    state: mounted
+#  with_subelements:
+#    - "{{ postgresql_clusters }}"
+#    - filesystem
+#  loop_control:
+#    label: "[mount point: {{ postgresql_host_datavg_mountpoint_prefix }}/{{ item.0.name }}/{{ item.1.mntp_suffix }}]"
+#  when: postgresql_host_configure_host_disks
+#  tags:
+#    - postgresql_host_filesystems
+#    - postgresql_host_filesystems_instances
+
+- name: configure filesystems | mount filesystems | set temporary variables (instances)
+  set_fact:
+    f_postgresql_host_fs_layout: "{{ f_postgresql_host_fs_layout + [ {} | combine( { 'vgname': postgresql_host_datavg } ) | combine( { 'mntp': postgresql_host_datavg_mountpoint_prefix + '/' + item.0.name + '/' + item.1.mntp_suffix } ) | combine( { 'lvname': 'lvpg' + item.0.name + item.1.mntp_suffix } ) | combine( { 'fstype': item.1.fstype } ) | combine( { 'mntp_len': (postgresql_host_datavg_mountpoint_prefix + '/' + item.0.name + '/' + item.1.mntp_suffix) |length } ) ] }}"
+  with_subelements:
+    - "{{ postgresql_clusters }}"
+    - filesystem
+  loop_control:
+    label: "[mount point: {{ postgresql_host_datavg_mountpoint_prefix }}/{{ item.0.name }}/{{ item.1.mntp_suffix }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_instances
+
+#
+# configure filesystems for PostgreSQL databases
+#
+
+- name: configure filesystems | (databases)
+  include: database_fs.yml pg_instance={{ outer_item }}
+  with_items:
+    - "{{ postgresql_clusters }}"
+  loop_control:
+    label: "[instnace: {{ outer_item.name }}]"
+    loop_var: outer_item
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_databases
+
+- name: configure filesystems | mount filesystems
+  mount: name={{ item.mntp }} src=/dev/mapper/{{ item.vgname }}-{{ item.lvname }} dump=1 passno=2 fstype={{ item.fstype }} state=mounted
+  with_items: "{{ f_postgresql_host_fs_layout | sort(attribute='mntp_len') }}"
+  loop_control:
+    label: "[mount point: {{ item.mntp }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+
+- name: configure filesystems | set correct ownership and permissions on directories 
+  file: path={{ item.1.mntp }} state=directory owner={{ postgresql_user }} group={{ postgresql_group }} mode={{ item.1.mode }}
+  with_subelements:
+    - "{{ postgresql_host_fs_layout }}"
+    - filesystem
+  loop_control:
+    label: "[mount point: {{ item.1.mntp }}]"
+  tags:
+    - postgresql_host_filesystems
+
+- name: configure filesystems | set correct ownership and permissions on directories (instances)
+  file: path={{ postgresql_host_datavg_mountpoint_prefix }}/{{ item.0.name }}/{{ item.1.mntp_suffix }} state=directory owner={{ postgresql_user }} group={{ postgresql_group }} mode={{ item.1.mode }}
+  with_subelements:
+    - "{{ postgresql_clusters }}"
+    - filesystem
+  loop_control:
+    label: "[mount point: {{ postgresql_host_datavg_mountpoint_prefix }}/{{ item.0.name }}/{{ item.1.mntp_suffix }}]"
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_instances
+
+- name: configure filesystems | set correct ownership and permissions on directories (databases)
+  include: database_fs_correct_ownership.yml pg_instance={{ outer_item }}
+  with_items:
+    - "{{ postgresql_clusters }}"
+  loop_control:
+    label: "[instnace: {{ outer_item.name }}]"
+    loop_var: outer_item
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_databases
+
+#
+# NFS
+#
+
+- name: configure NFS | start and enable rpcbind
+  service: name=rpcbind state=started  enabled=yes
+  when: postgresql_host_configure_nfs
+  tags: postgresql_host_nfs
+
+- name: configure NFS | umount filesystem (1)
+  mount: name={{ item.mount_point }} state=unmounted
+  with_items: '{{ postgresql_host_nfs_servers }}'
+  loop_control:
+    label: "[mount point: {{ item.mount_point }}, server: {{ item.nfs_server }}, path: {{ item.path }}]"
+  when: postgresql_host_configure_nfs
+  tags: postgresql_host_nfs
+
+- name: configure NFS | umount filesystem (2)
+  mount: name={{ item.mount_point }} state=absent
+  with_items: '{{ postgresql_host_nfs_servers }}'
+  loop_control:
+    label: "[mount point: {{ item.mount_point }}, server: {{ item.nfs_server }}, path: {{ item.path }}]"
+  when: postgresql_host_configure_nfs
+  tags: postgresql_host_nfs
+
+- name: configure NFS | create mountpoints
+  file: path={{ item.mount_point }} state=directory mode=0777
+  with_items: '{{ postgresql_host_nfs_servers }}'
+  loop_control:
+    label: "[mount point: {{ item.mount_point }}, server: {{ item.nfs_server }}, path: {{ item.path }}]"
+  when: postgresql_host_configure_nfs
+  tags: postgresql_host_nfs
+
+- name: configure NFS | mount NFS filesystems
+  mount: name={{ item.mount_point }} src='{{ item.nfs_server }}:{{ item.path }}' dump=0 passno=0 opts='{{ item.opts }}' fstype=nfs state=mounted
+  with_items: '{{ postgresql_host_nfs_servers }}'
+  loop_control:
+    label: "[mount point: {{ item.mount_point }}, server: {{ item.nfs_server }}, path: {{ item.path }}]"
+  when: postgresql_host_configure_nfs
+  tags: postgresql_host_nfs
+
+#
+#  dbpostgres.service
+#
+
+- name: configure dbpostgres service | create bin directory
+  file: path=/home/{{ postgresql_user }}/bin state=directory owner={{ postgresql_user }} group={{ postgresql_group }} mode=0755
+  when: postgresql_host_configure_dbpostgres_service
+  tags:
+    - postgresql_host_postgres_service
+
+- name: configure dbpostgres service | create postgres.sh startup file
+  template:
+    src: postgres.sh.j2
+    dest: /home/{{ postgresql_user }}/bin/postgres.sh
+    mode: 0755
+  become: yes
+  become_user: '{{ postgresql_user }}'
+  when: postgresql_host_configure_dbpostgres_service
+  tags:
+    - postgresql_host_postgres_service
+    - postgresql_host_postgres_service_startup_file
+
+- name: configure dbpostgres service | create systemd service unit
+  template:
+    src: dbpostgres.service.j2
+    dest: /etc/systemd/system/dbpostgres.service
+    owner: root
+    group: root
+    mode: 0644
+  notify:
+    - restart dbpostgres
+  when: postgresql_host_configure_dbpostgres_service
+  tags:
+    - postgresql_host_postgres_servicefile
+    - postgresql_host_postgres_service
+
+- name: configure dbpostgres service | start and enable dbpostgres.service
+  systemd:
+    daemon_reload: true
+    name: dbpostgres
+    state: started
+    enabled: true
+  when: postgresql_host_configure_dbpostgres_service
+  tags:
+    - postgresql_host_postgres_service
+
+- name: misc | copy standard scripts and files
+  copy:
+    src: "files/{{ item.file }}"
+    dest: "{{ item.dest }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  with_items: "{{ postgresql_host_files_to_copy }}"
+  loop_control:
+    label: "file: {{ item.file }}, dest: {{ item.dest }}]"
+  tags:
+    - postgresql_host_misc
+    - postgresql_host_copy_files
+
+#
+# Customization
+#
+
+- name: host customization
+  include_tasks: "{{ tasks_from_item }}"
+  with_items:
+    - "{{ postgresql_host_customization_tasks_from }}"
+  loop_control:
+    label: "[tasks file: {{ tasks_from_item }}]"
+    loop_var: tasks_from_item
+  when: postgresql_host_customization_enable
+  tags:
+    - postgresql_host_customization
+

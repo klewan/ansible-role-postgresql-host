@@ -1,0 +1,13 @@
+---
+
+- name: configure filesystems | set correct ownership and permissions on directories (databases)
+  file: path={{ postgresql_host_datavg_mountpoint_prefix }}/{{ pg_instance.name }}/{{ item.0.name }}_{{ item.1.name_suffix }} state=directory owner={{ postgresql_user }} group={{ postgresql_group }} mode={{ item.1.mode }}
+  with_subelements:
+    - "{{ pg_instance.databases }}"
+    - tablespaces
+  loop_control:
+    label: "[mount point: {{ postgresql_host_datavg_mountpoint_prefix }}/{{ pg_instance.name }}/{{ item.0.name }}_{{ item.1.name_suffix }}]"
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_databases
+

@@ -1,0 +1,25 @@
+#
+# systemd integration for PostgreSQL instances
+#
+[Unit]
+Description=The PostgreSQL Instance Service
+After=syslog.target network.target
+Requires=network.target local-fs.target
+
+[Service]
+LimitMEMLOCK=infinity
+LimitNOFILE=65535
+CPUAccounting=true
+CPUShares=1500
+Type=forking
+RemainAfterExit=yes
+#User={{ postgresql_user }}
+#Group={{ postgresql_group }}
+User=root
+Group=root
+ExecStart=/home/{{ postgresql_user }}/bin/postgres.sh start
+ExecStop=/home/{{ postgresql_user }}/bin/postgres.sh stop
+
+[Install]
+WantedBy=multi-user.target
+

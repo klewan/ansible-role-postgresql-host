@@ -1,0 +1,21 @@
+galaxy_info:
+  author: Krzysztof Lewandowski
+  description: Database Server Configuration
+  
+
+  license: GPLv3
+
+  min_ansible_version: 2.3
+
+  platforms:
+  - name: EL
+    versions:
+    - 7
+
+  galaxy_tags:
+  - postgresql
+  - databases
+
+dependencies:
+  - { role: postgresql }
+

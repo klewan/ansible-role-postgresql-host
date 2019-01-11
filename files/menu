@@ -1,0 +1,37 @@
+#!/bin/ksh
+
+case $(uname) in
+  Linux) PGTAB=/etc/pgtab ;;
+  *) echo "Unknown O/S"
+     return 1 ;;
+esac
+
+if [ ! -f $PGTAB ]
+then
+  echo "pgtab file not found."
+  exit 1
+fi
+
+PS3="Choose pg cluster? : "
+HOST=${HOST:-$(uname -n)}
+
+select name in $(awk ' $1!~ /[#*]/ {print $1} ' $PGTAB | sed '/^$/d' | cut -d: -f1,2,3,4 | grep -v ':dummy')
+do
+  if [ -n "$name" ]
+  then
+    export PGDATABASE=`echo $name |cut -d: -f1`
+    export PGHOME=`echo $name |cut -d: -f2`
+    export PATH=$BASE_PATH:${PGHOME}/bin
+    export PGDATA=`echo $name |cut -d: -f3`
+    export PGPORT=`echo $name |cut -d: -f4`
+
+    break
+
+  else
+
+    echo "Hmm, wrong choice."
+    break
+
+  fi
+done
+

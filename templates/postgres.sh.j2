@@ -1,0 +1,140 @@
+#!/bin/bash
+#-------------------------------------------------------------------------------
+# FILE:  postgres.sh
+#
+# PURPOSE: Start and stop PostgreSQL instance defined in /etc/pgtab
+#
+
+# Postgres Server Service script for Linux
+POSTGRESUSER={{ postgresql_user }}
+POSTGRESHOME=`cat /etc/passwd | grep "^${POSTGRESUSER}:"  | cut -d ":" -f6`
+NAME=
+LOCKFILE=
+PARAMS=$*
+PARAMSCOUNT=$#
+PGDATABASE=
+PGHOME=
+PGDATA=
+
+
+CleanExit()
+{
+   ExitCode="$1"
+   exit "${ExitCode}"
+}
+
+
+# get al the databases clusters to start from /etc/pgtab
+loop_through_pgtab_clusters()
+{
+    for line in `cat /etc/pgtab | grep -v "#" | egrep -v "\:D|\:N" | grep "\:Y"`; do
+       PGDATABASE=`echo ${line} | cut -d: -f1`
+       PGHOME=`echo ${line} | cut -d: -f2`
+       PGDATA=`echo ${line} | cut -d: -f3`
+       PGPORT=`echo ${line} | cut -d: -f4`
+       NAME=postgres${PGDATABASE}
+       LOCKFILE=/var/lock/subsys/$NAME
+       case "$1" in
+         start)
+               start
+               ;;
+         stop)
+               stop
+               ;;
+         reload)
+               reload
+               ;;
+         restart)
+               restart
+               ;;
+         *)
+               echo $"Usage: $0 {start|stop|restart|reload}"
+               exit 1
+       esac
+    done
+}
+
+
+create_remove_lock_file()
+{
+        if [ -e "${PGDATA}/postmaster.pid" ]
+        then
+                pidofproc=`head -n 1 ${PGDATA}/postmaster.pid`
+                pidalive=`ps -p $pidofproc | grep $pidofproc`
+
+                if [ "x$pidalive" != "x" ]
+                then
+                        touch $LOCKFILE
+                        echo 0
+                        return
+                fi
+        fi
+        rm -f $LOCKFILE
+        echo 1
+}
+
+
+start()
+{
+        startserver=$(create_remove_lock_file)
+        if [ $startserver != 0 ]
+        then
+                echo $"Starting Postgres Server : "
+
+                su - ${POSTGRESUSER} -c "PATH=${PGHOME}/bin:$PATH LD_LIBRARY_PATH=${PGHOME}/lib:$LD_LIBRARY_PATH PGPORT=${PGPORT} ${PGHOME}/bin/pg_ctl -w start -D \"${PGDATA}\""
+
+                if [ $? -eq 0 ];
+                then
+                        create_remove_lock_file >/dev/null
+                        echo "Postgres Server $PGDATABASE started successfully"
+                else
+                        echo "Postgres Server $PGDATABASE did not start in a timely fashion"
+                fi
+        fi
+}
+
+
+stop()
+{
+        startserver=$(create_remove_lock_file)
+        if [ $startserver = 0 ]
+        then
+                echo $"Stopping Postgres Server ${PGDATABASE}: "
+                su - ${POSTGRESUSER} -c "${PGHOME}/bin/pg_ctl stop -m fast -w -D \"${PGDATA}\""
+
+                if [ $? -eq 0 ];
+                then
+                        create_remove_lock_file >/dev/null
+                fi
+        fi
+}
+
+
+reload()
+{
+        echo $"Reloading Postgres Server ${PGDATABASE}: "
+        su - ${POSTGRESUSER} -c "${PGHOME}/bin/pg_ctl reload -D \"${PGDATA}\""
+}
+
+
+restart()
+{
+        echo $"Restarting Postgres Server ${PGDATABASE}: "
+
+        su - ${POSTGRESUSER} -c "PATH=${PGHOME}/bin:$PATH LD_LIBRARY_PATH=${PGHOME}/lib:$LD_LIBRARY_PATH ${PGHOME}/bin/pg_ctl restart -m fast -w -D \"${PGDATA}\""
+
+        if [ $? -eq 0 ];
+        then
+                create_remove_lock_file >/dev/null
+                echo "Postgres Server ${PGDATABASE} restarted successfully"
+        else
+                create_remove_lock_file >/dev/null
+                echo "Postgres Server ${PGDATABASE} start in a timely fashion"
+        fi
+}
+
+# loop through the clusters defined in /etc/pgtab
+loop_through_pgtab_clusters ${1}
+exit 0
+
+

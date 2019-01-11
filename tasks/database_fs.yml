@@ -1,0 +1,51 @@
+---
+
+- name: configure filesystems | create directories (databases)
+  file: path={{ postgresql_host_datavg_mountpoint_prefix }}/{{ pg_instance.name }}/{{ item.0.name }}_{{ item.1.name_suffix }} state=directory owner={{ postgresql_user }} group={{ postgresql_group }} mode={{ item.1.mode }}
+  with_subelements:
+    - "{{ pg_instance.databases }}"
+    - tablespaces
+  loop_control:
+    label: "[directory: {{ postgresql_host_datavg_mountpoint_prefix }}/{{ pg_instance.name }}/{{ item.0.name }}_{{ item.1.name_suffix }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_databases
+
+- name: configure filesystems | create LVs (databases)
+  lvol: vg={{ postgresql_host_datavg }} lv=lvpg{{ pg_instance.name }}tbs{{ item.0.name }}_{{ item.1.name_suffix }} size={{ item.1.lvsize }} state=present shrink=no
+  with_subelements:
+    - "{{ pg_instance.databases }}"
+    - tablespaces
+  loop_control:
+    label: "[instance: {{ pg_instance.name }}, database: {{ item.0.name }}, LV: lvpg{{ pg_instance.name }}tbs{{ item.0.name }}_{{ item.1.name_suffix }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_databases
+
+- name: configure filesystems | create filesystems (databases)
+  filesystem: fstype={{ item.1.fstype }} dev=/dev/{{ postgresql_host_datavg }}/lvpg{{ pg_instance.name }}tbs{{ item.0.name }}_{{ item.1.name_suffix }}
+  with_subelements:
+    - "{{ pg_instance.databases }}"
+    - tablespaces
+  loop_control:
+    label: "[filesystem: /dev/{{ postgresql_host_datavg }}/lvpg{{ pg_instance.name }}tbs{{ item.0.name }}_{{ item.1.name_suffix }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_databases
+
+- name: configure filesystems | mount filesystems | set temporary variables (databases)
+  set_fact:
+    f_postgresql_host_fs_layout: "{{ f_postgresql_host_fs_layout + [ {} | combine( { 'vgname': postgresql_host_datavg } ) | combine( { 'mntp': postgresql_host_datavg_mountpoint_prefix + '/' + pg_instance.name + '/' + item.0.name + '_' + item.1.name_suffix } ) | combine( { 'lvname': 'lvpg' + pg_instance.name + 'tbs' + item.0.name + '_' + item.1.name_suffix } ) | combine( { 'fstype': item.1.fstype } ) | combine( { 'mntp_len': (postgresql_host_datavg_mountpoint_prefix + '/' + pg_instance.name + '/' + item.0.name + '_' + item.1.name_suffix) |length } ) ] }}"
+  with_subelements:
+    - "{{ pg_instance.databases }}"
+    - tablespaces
+  loop_control:
+    label: "[mount point: {{ postgresql_host_datavg_mountpoint_prefix }}/{{ pg_instance.name }}/{{ item.0.name }}_{{ item.1.name_suffix }}]"
+  when: postgresql_host_configure_host_disks
+  tags:
+    - postgresql_host_filesystems
+    - postgresql_host_filesystems_databases
+
