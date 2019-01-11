@@ -17,5 +17,5 @@ galaxy_info:
   - databases
 
 dependencies:
-  - { role: postgresql }
+  - { role: klewan.postgresql }
 
